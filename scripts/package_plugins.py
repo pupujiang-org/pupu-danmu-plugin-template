@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -88,6 +89,24 @@ def _validate_repository_license() -> None:
     except OSError:
         raise ValueError("repository LICENSE is missing") from None
     _require_mit_license_text(payload, subject="repository LICENSE")
+
+
+def _validate_no_tracked_release_assets() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    tracked_assets = [
+        path.decode("utf-8", errors="replace")
+        for path in result.stdout.split(b"\0")
+        if path.lower().endswith((b".zip", b".zip.sha256"))
+    ]
+    if tracked_assets:
+        raise ValueError(
+            "release assets must not be committed: " + ", ".join(tracked_assets)
+        )
 
 
 def _load_manifest(path: Path) -> dict[str, object]:
@@ -295,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         _validate_repository_license()
+        if args.check:
+            _validate_no_tracked_release_assets()
         directories = _plugin_directories(args.plugin)
         if not directories:
             raise ValueError("no plugin sources found")

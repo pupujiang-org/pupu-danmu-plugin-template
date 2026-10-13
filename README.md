@@ -39,7 +39,7 @@ After review, publish a plugin version by pushing a tag named `<slug>-v<semver>`
 
 The current host MVP accepts only `kind=ai-participation`, `runtime_type=declarative`, API version 1, and the capabilities defined by the host. The host verifies the fixed HTTPS Release URL, exact byte count, SHA-256, manifest, file allowlist, and installation path before atomically installing. Unknown fields, capabilities, runtimes, and resource paths fail closed. `min_host_version` follows PEP 440; plugin `version` follows SemVer.
 
-The initial package directories are source examples only. They are not available in the market until a fixed-version Release is reviewed and a matching Catalog entry is merged.
+The plugin directories are the canonical source for the official plugins. ZIP packages are not stored in Git: the Release workflow builds each archive and SHA-256 sidecar from its reviewed version tag and uploads both as immutable GitHub Release assets. A plugin becomes available in the host market only after its fixed-version Release is reviewed and a matching Catalog entry is merged.
 
 ## License
 
