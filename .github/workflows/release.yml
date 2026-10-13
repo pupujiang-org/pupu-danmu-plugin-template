@@ -1,0 +1,45 @@
+name: Build plugin Release assets
+
+on:
+  push:
+    tags:
+      - '*-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.ref }}
+      - name: Resolve plugin and version from the immutable tag
+        id: release
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" != *-v* ]]; then
+            echo "Expected a <slug>-v<semver> tag" >&2
+            exit 1
+          fi
+          slug="${tag%-v*}"
+          version="${tag##*-v}"
+          python3 scripts/package_plugins.py --plugin "$slug" --output dist --expected-version "$version"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Publish immutable ZIP and SHA-256 assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SLUG: ${{ steps.release.outputs.slug }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "dist/$RELEASE_SLUG-$RELEASE_VERSION.zip" \
+            "dist/$RELEASE_SLUG-$RELEASE_VERSION.zip.sha256" \
+            --verify-tag \
+            --title "$RELEASE_SLUG $RELEASE_VERSION" \
+            --notes "Static data-only plugin package built from $RELEASE_SHA. The release asset is verified by the registry's exact SHA-256 and host-side package checks."
