@@ -1,8 +1,8 @@
 """Validate and deterministically package static plugin data; never executes it.
 
-Official plugins are MIT-licensed. `--check` and packaging both fail when the
-repository LICENSE, a plugin LICENSE, or a manifest `license` field stops
-matching that policy.
+The repository's MIT license covers the template scaffolding. A release package
+must explicitly select the currently supported MIT plugin license and include
+its matching license text.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGINS = ROOT / "plugins"
+PLUGIN_SOURCE = ROOT / "plugin"
 ALLOWED_ROOT_FILES = {
     "manifest.json",
     "README.md",
@@ -109,7 +109,7 @@ def _validate_no_tracked_release_assets() -> None:
         )
 
 
-def _load_manifest(path: Path) -> dict[str, object]:
+def _load_manifest(path: Path, *, allow_template: bool) -> dict[str, object]:
     payload = path.read_bytes()
     if not payload or len(payload) > 64 * 1024:
         raise ValueError("manifest size is outside the supported limit")
@@ -143,12 +143,16 @@ def _load_manifest(path: Path) -> dict[str, object]:
         r"org\.[a-z0-9-]+\.[a-z0-9][a-z0-9-]*", slug
     ):
         raise ValueError("plugin id must be a namespaced lowercase id")
-    if slug.rsplit(".", 1)[-1] != path.parent.name:
-        raise ValueError("plugin id suffix must match its source directory")
+    if not allow_template and slug == "org.example.plugin-template":
+        raise ValueError("replace the template plugin id before packaging")
     if not isinstance(version, str) or SEMVER.fullmatch(version) is None:
         raise ValueError("plugin version must use SemVer")
-    if value.get("license") != MIT_LICENSE:
-        raise ValueError(f"official plugin license must be {MIT_LICENSE}")
+    if value.get("license") != MIT_LICENSE and not (
+        allow_template and value.get("license") == "CHOOSE_LICENSE"
+    ):
+        raise ValueError("choose a supported plugin license before packaging (MIT)")
+    if not allow_template and version == "0.0.0":
+        raise ValueError("replace the template version before packaging")
     if value.get("kind") != "ai-participation":
         raise ValueError("unsupported plugin kind")
     if (
@@ -203,7 +207,9 @@ def _load_manifest(path: Path) -> dict[str, object]:
     return value
 
 
-def _package_files(directory: Path, manifest: dict[str, object]) -> dict[str, bytes]:
+def _package_files(
+    directory: Path, manifest: dict[str, object], *, allow_template: bool
+) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     seen_casefolded_paths: set[str] = set()
     total_bytes = 0
@@ -260,8 +266,26 @@ def _package_files(directory: Path, manifest: dict[str, object]) -> dict[str, by
     license_payload = files.get("LICENSE")
     if license_payload is None:
         raise ValueError("plugin package must include its LICENSE file")
-    _require_mit_license_text(license_payload, subject="plugin LICENSE")
+    if manifest["license"] == MIT_LICENSE:
+        _require_mit_license_text(license_payload, subject="plugin LICENSE")
+    elif not (
+        allow_template
+        and b"Choose the plugin license" in license_payload
+    ):
+        raise ValueError("plugin LICENSE must match the selected supported license")
     return files
+
+
+def _reject_template_placeholders(files: dict[str, bytes]) -> None:
+    markers = (
+        b"org.example.plugin-template",
+        b"CHOOSE_LICENSE",
+        b"Replace with",
+        b"Choose the plugin license",
+    )
+    for name, content in files.items():
+        if any(marker in content for marker in markers):
+            raise ValueError(f"replace template placeholder before packaging: {name}")
 
 
 def _validate_json_resource(payload: bytes) -> None:
@@ -286,16 +310,6 @@ def _build_archive(files: dict[str, bytes]) -> bytes:
     return payload
 
 
-def _plugin_directories(requested: str | None) -> list[Path]:
-    directories = sorted(path for path in PLUGINS.iterdir() if path.is_dir())
-    if requested is None:
-        return directories
-    matching = [path for path in directories if path.name == requested]
-    if not matching:
-        raise ValueError(f"unknown plugin slug: {requested}")
-    return matching
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -303,7 +317,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate all packages and the MIT license policy",
     )
-    parser.add_argument("--plugin", help="package one plugin by directory slug")
     parser.add_argument(
         "--output", type=Path, help="directory for ZIP and SHA-256 files"
     )
@@ -314,29 +327,34 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         _validate_repository_license()
-        if args.check:
-            _validate_no_tracked_release_assets()
-        directories = _plugin_directories(args.plugin)
-        if not directories:
-            raise ValueError("no plugin sources found")
-        for directory in directories:
-            manifest = _load_manifest(directory / "manifest.json")
-            files = _package_files(directory, manifest)
-            payload = _build_archive(files)
-            version = manifest["version"]
-            if args.expected_version is not None and version != args.expected_version:
-                raise ValueError("tag version does not match plugin manifest")
-            if not args.check:
-                assert args.output is not None
-                args.output.mkdir(parents=True, exist_ok=True)
-                slug = directory.name
-                archive_path = args.output / f"{slug}-{version}.zip"
-                archive_path.write_bytes(payload)
-                digest = hashlib.sha256(payload).hexdigest()
-                (args.output / f"{archive_path.name}.sha256").write_text(
-                    f"{digest}  {archive_path.name}\n", encoding="ascii"
-                )
-                print(f"{archive_path} sha256={digest}")
+        _validate_no_tracked_release_assets()
+        if not PLUGIN_SOURCE.is_dir():
+            raise ValueError("single plugin source directory is missing: plugin/")
+        manifest = _load_manifest(
+            PLUGIN_SOURCE / "manifest.json", allow_template=args.check
+        )
+        files = _package_files(
+            PLUGIN_SOURCE, manifest, allow_template=args.check
+        )
+        if not args.check:
+            _reject_template_placeholders(files)
+        payload = _build_archive(files)
+        version = manifest["version"]
+        if args.expected_version is not None and version != args.expected_version:
+            raise ValueError("tag version does not match plugin manifest")
+        if not args.check:
+            assert args.output is not None
+            args.output.mkdir(parents=True, exist_ok=True)
+            plugin_id = manifest["id"]
+            assert isinstance(plugin_id, str)
+            slug = plugin_id.rsplit(".", 1)[-1]
+            archive_path = args.output / f"{slug}-{version}.zip"
+            archive_path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            (args.output / f"{archive_path.name}.sha256").write_text(
+                f"{digest}  {archive_path.name}\n", encoding="ascii"
+            )
+            print(f"{archive_path} sha256={digest}")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         print(f"plugin validation failed: {error}", file=sys.stderr)
         return 1
