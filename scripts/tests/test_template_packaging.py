@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -23,7 +24,20 @@ class TemplatePackagingTests(unittest.TestCase):
             license_text.encode("utf-8"), subject="plugin LICENSE"
         )
 
-    def test_template_checks_but_cannot_build_release_assets(self) -> None:
+    def test_template_placeholders_are_rejected_for_release(self) -> None:
+        manifest = json.loads((ROOT / "plugin" / "manifest.json").read_text())
+        manifest["id"] = "org.example.plugin-template"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            manifest_path = Path(temporary_dir) / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "replace the template plugin id"):
+                package_plugins._load_manifest(manifest_path, allow_template=False)
+        with self.assertRaisesRegex(ValueError, "template placeholder"):
+            package_plugins._reject_template_placeholders(
+                {"personas.json": b"Replace with a persona"}
+            )
+
+    def test_repository_source_passes_check(self) -> None:
         check = subprocess.run(
             [sys.executable, str(PACKAGER), "--check"],
             cwd=ROOT,
@@ -32,18 +46,6 @@ class TemplatePackagingTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(check.returncode, 0, check.stderr)
-
-        with tempfile.TemporaryDirectory() as output_dir:
-            build = subprocess.run(
-                [sys.executable, str(PACKAGER), "--output", output_dir],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertNotEqual(build.returncode, 0)
-            self.assertIn("replace the template plugin id", build.stderr)
-            self.assertEqual(list(Path(output_dir).iterdir()), [])
 
 
 if __name__ == "__main__":
