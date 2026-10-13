@@ -13,5 +13,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Validate static package data
+      - name: Validate static package data and MIT license policy
         run: python3 scripts/package_plugins.py --check

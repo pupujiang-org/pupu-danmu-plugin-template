@@ -1,4 +1,9 @@
-"""Validate and deterministically package static plugin data; never executes it."""
+"""Validate and deterministically package static plugin data; never executes it.
+
+Official plugins are MIT-licensed. `--check` and packaging both fail when the
+repository LICENSE, a plugin LICENSE, or a manifest `license` field stops
+matching that policy.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +29,29 @@ MAX_FILE_BYTES = 1024 * 1024
 MAX_TOTAL_BYTES = 5 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 4 * 1024 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
+MIT_LICENSE = "MIT"
+MIT_LICENSE_TEXT = """MIT License
+
+Copyright (c) 2026 Pupujiang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
 SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
@@ -39,6 +67,27 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError("duplicate JSON key")
         result[key] = value
     return result
+
+
+def _normalized_text(payload: bytes, *, subject: str) -> str:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"{subject} must be UTF-8 text") from None
+    return text.replace("\r\n", "\n")
+
+
+def _require_mit_license_text(payload: bytes, *, subject: str) -> None:
+    if _normalized_text(payload, subject=subject) != MIT_LICENSE_TEXT:
+        raise ValueError(f"{subject} must contain the MIT license text")
+
+
+def _validate_repository_license() -> None:
+    try:
+        payload = (ROOT / "LICENSE").read_bytes()
+    except OSError:
+        raise ValueError("repository LICENSE is missing") from None
+    _require_mit_license_text(payload, subject="repository LICENSE")
 
 
 def _load_manifest(path: Path) -> dict[str, object]:
@@ -79,6 +128,8 @@ def _load_manifest(path: Path) -> dict[str, object]:
         raise ValueError("plugin id suffix must match its source directory")
     if not isinstance(version, str) or SEMVER.fullmatch(version) is None:
         raise ValueError("plugin version must use SemVer")
+    if value.get("license") != MIT_LICENSE:
+        raise ValueError(f"official plugin license must be {MIT_LICENSE}")
     if value.get("kind") != "ai-participation":
         raise ValueError("unsupported plugin kind")
     if (
@@ -187,6 +238,10 @@ def _package_files(directory: Path, manifest: dict[str, object]) -> dict[str, by
             _validate_json_resource(content)
     if "manifest.json" not in files:
         raise ValueError("plugin source has no manifest.json")
+    license_payload = files.get("LICENSE")
+    if license_payload is None:
+        raise ValueError("plugin package must include its LICENSE file")
+    _require_mit_license_text(license_payload, subject="plugin LICENSE")
     return files
 
 
@@ -224,7 +279,11 @@ def _plugin_directories(requested: str | None) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="validate all packages")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate all packages and the MIT license policy",
+    )
     parser.add_argument("--plugin", help="package one plugin by directory slug")
     parser.add_argument(
         "--output", type=Path, help="directory for ZIP and SHA-256 files"
@@ -235,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--output is required unless --check is used")
 
     try:
+        _validate_repository_license()
         directories = _plugin_directories(args.plugin)
         if not directories:
             raise ValueError("no plugin sources found")
