@@ -12,6 +12,8 @@ The host repository owns runtime behavior, permissions, session pins, model acce
 
 The independent [plugin registry](https://github.com/pupujiang-org/pupu-danmu-plugin-registry) stores Catalog metadata and publishes the generated Pages index. It must never contain plugin source or ZIP packages.
 
+For the host's current Manifest v1 contract, data limits, local verification, Release and Catalog flow, see the [plugin developer guide](https://github.com/pupujiang-org/pupu-danmu/blob/main/docs/public/plugin-development.md).
+
 ## Local validation and packaging
 
 Use Python 3.13 or newer:
@@ -37,7 +39,7 @@ After review, publish a plugin version by pushing a tag named `<slug>-v<semver>`
 
 The current host MVP accepts only `kind=ai-participation`, `runtime_type=declarative`, API version 1, and the capabilities defined by the host. The host verifies the fixed HTTPS Release URL, exact byte count, SHA-256, manifest, file allowlist, and installation path before atomically installing. Unknown fields, capabilities, runtimes, and resource paths fail closed. `min_host_version` follows PEP 440; plugin `version` follows SemVer.
 
-The initial package directories are source examples only. They are not available in the market until a compatible host adapter is implemented, a Release is reviewed, and a matching Catalog entry is merged.
+The initial package directories are source examples only. They are not available in the market until a fixed-version Release is reviewed and a matching Catalog entry is merged.
 
 ## License
 
