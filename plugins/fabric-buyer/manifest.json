@@ -6,7 +6,7 @@
   "description": "布料直播场景的静态角色与主题资源示例。",
   "author": "pupujiang",
   "license": "MIT",
-  "min_host_version": "0.6.0",
+  "min_host_version": "0.5.0b3",
   "kind": "ai-participation",
   "runtime_type": "declarative",
   "plugin_api_version": 1,
