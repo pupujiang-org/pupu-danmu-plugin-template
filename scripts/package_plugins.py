@@ -1,13 +1,13 @@
 """Validate and deterministically package static plugin data; never executes it.
 
-The repository's MIT license covers the template scaffolding. A release package
-must explicitly select the currently supported MIT plugin license and include
-its matching license text.
+The repository's MIT license covers the template scaffolding. A plugin release
+must select a valid SPDX license expression and include matching license text.
 """
 
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import hashlib
 import json
 import re
@@ -31,6 +31,17 @@ MAX_TOTAL_BYTES = 5 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 4 * 1024 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
 MIT_LICENSE = "MIT"
+SPDX_DATA_PATH = Path(__file__).resolve().with_name("spdx-license-ids.json")
+SPDX_TOKEN = re.compile(r"[()]|[^\s()]+")
+SPDX_LICENSE_REF = re.compile(
+    r"^(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+$"
+)
+SPDX_OPERATORS = {"and", "or"}
+SPDX_WITH = "with"
+SPDX_UNKNOWN = {"none", "noassertion"}
+SPDX_OPERATOR_TOKENS = SPDX_OPERATORS | {SPDX_WITH}
+MIN_CUSTOM_LICENSE_BYTES = 100
+TEMPLATE_COPYRIGHT = "Copyright (c) 2026 Pupujiang"
 MIT_LICENSE_TEXT = """MIT License
 
 Copyright (c) 2026 Pupujiang
@@ -78,13 +89,143 @@ def _normalized_text(payload: bytes, *, subject: str) -> str:
     return text.replace("\r\n", "\n")
 
 
-def _require_mit_license_text(payload: bytes, *, subject: str) -> None:
+@lru_cache(maxsize=1)
+def _spdx_identifiers() -> tuple[dict[str, str], dict[str, str]]:
+    """Load the same pinned SPDX license and exception ids as the Registry."""
+    try:
+        data = json.loads(SPDX_DATA_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        raise ValueError(
+            "the pinned SPDX identifier list is missing or invalid"
+        ) from None
+    if not isinstance(data, dict):
+        raise ValueError("the pinned SPDX identifier list is invalid")
+    licenses = data.get("license_ids")
+    exceptions = data.get("exception_ids")
+    if (
+        not isinstance(licenses, list)
+        or not isinstance(exceptions, list)
+        or not licenses
+        or not all(isinstance(item, str) and item for item in licenses)
+        or not all(isinstance(item, str) and item for item in exceptions)
+    ):
+        raise ValueError("the pinned SPDX identifier list is invalid")
+    return (
+        {item.casefold(): item for item in licenses},
+        {item.casefold(): item for item in exceptions},
+    )
+
+
+def _validate_declared_license(value: object) -> None:
+    """Accept only resolvable SPDX expressions supported by the Registry."""
+    if not isinstance(value, str) or not value or len(value) > 100:
+        raise ValueError("plugin license must be a non-empty SPDX expression")
+    licenses, exceptions = _spdx_identifiers()
+    tokens = SPDX_TOKEN.findall(value)
+    if not tokens:
+        raise ValueError("plugin license expression is empty")
+    position = 0
+
+    def take() -> str | None:
+        nonlocal position
+        if position >= len(tokens):
+            return None
+        token = tokens[position]
+        position += 1
+        return token
+
+    def parse_simple() -> bool:
+        token = take()
+        if token is None:
+            raise ValueError("plugin license expression is incomplete")
+        if token == "(":
+            parse_expression()
+            if take() != ")":
+                raise ValueError("plugin license expression has unbalanced parentheses")
+            return False
+        if token == ")" or token.casefold() in SPDX_OPERATOR_TOKENS:
+            raise ValueError("plugin license expression is malformed")
+        identifier = token[:-1] if token.endswith("+") and token != "+" else token
+        if identifier.casefold() in SPDX_UNKNOWN:
+            raise ValueError("NONE and NOASSERTION are not plugin licenses")
+        if SPDX_LICENSE_REF.fullmatch(identifier) is None and (
+            identifier.casefold() not in licenses
+        ):
+            raise ValueError(f"unknown SPDX license identifier: {identifier}")
+        return True
+
+    def parse_term() -> None:
+        nonlocal position
+        simple = parse_simple()
+        if position < len(tokens) and tokens[position].casefold() == SPDX_WITH:
+            if not simple:
+                raise ValueError("SPDX WITH must follow one license identifier")
+            position += 1
+            exception = take()
+            if (
+                exception is None
+                or exception == ")"
+                or exception.casefold() in SPDX_OPERATOR_TOKENS
+            ):
+                raise ValueError("SPDX WITH exception is incomplete")
+            if (
+                SPDX_LICENSE_REF.fullmatch(exception) is None
+                and exception.casefold() not in exceptions
+            ):
+                raise ValueError(f"unknown SPDX exception identifier: {exception}")
+
+    def parse_expression() -> None:
+        nonlocal position
+        parse_term()
+        while position < len(tokens) and tokens[position].casefold() in SPDX_OPERATORS:
+            position += 1
+            parse_term()
+
+    parse_expression()
+    if position != len(tokens):
+        raise ValueError("SPDX license expression has trailing content")
+
+
+def _require_mit_license_text(
+    payload: bytes, *, subject: str, author: str | None = None
+) -> None:
     text = _normalized_text(payload, subject=subject)
-    copyright_lines = re.findall(r"^Copyright \(c\) [0-9]{4} .+$", text, re.M)
+    copyright_lines = re.findall(r"^Copyright \(c\) [0-9]{4} .+$", text, re.MULTILINE)
     if len(copyright_lines) != 1 or text != MIT_LICENSE_TEXT.replace(
-        "Copyright (c) 2026 Pupujiang", copyright_lines[0]
+        TEMPLATE_COPYRIGHT, copyright_lines[0]
     ):
         raise ValueError(f"{subject} must contain the MIT license text")
+    if (
+        author is not None
+        and copyright_lines[0].casefold() == TEMPLATE_COPYRIGHT.casefold()
+        and "pupujiang" not in author.casefold()
+    ):
+        raise ValueError(f"{subject} must replace the template copyright holder")
+
+
+def _validate_plugin_license_text(
+    payload: bytes, *, license_expression: object, author: object
+) -> None:
+    _validate_declared_license(license_expression)
+    if not isinstance(license_expression, str) or not isinstance(author, str):
+        raise ValueError("plugin license and author must be text")
+    if license_expression.casefold() == MIT_LICENSE.casefold():
+        _require_mit_license_text(payload, subject="plugin LICENSE", author=author)
+        return
+
+    text = _normalized_text(payload, subject="plugin LICENSE")
+    if not text.strip() or len(payload) < MIN_CUSTOM_LICENSE_BYTES:
+        raise ValueError(
+            "plugin LICENSE must include the complete selected license text"
+        )
+    if text.splitlines()[0] != f"SPDX-License-Identifier: {license_expression}":
+        raise ValueError(
+            "plugin LICENSE SPDX-License-Identifier must match the manifest"
+        )
+    if "Choose the plugin license" in text or "Replace with" in text:
+        raise ValueError("plugin LICENSE still contains a template placeholder")
+    if TEMPLATE_COPYRIGHT in text and "pupujiang" not in author.casefold():
+        raise ValueError("plugin LICENSE must replace the template copyright holder")
 
 
 def _validate_repository_license() -> None:
@@ -151,10 +292,10 @@ def _load_manifest(path: Path, *, allow_template: bool) -> dict[str, object]:
         raise ValueError("replace the template plugin id before packaging")
     if not isinstance(version, str) or SEMVER.fullmatch(version) is None:
         raise ValueError("plugin version must use SemVer")
-    if value.get("license") != MIT_LICENSE and not (
-        allow_template and value.get("license") == "CHOOSE_LICENSE"
-    ):
-        raise ValueError("choose a supported plugin license before packaging (MIT)")
+    if allow_template and value.get("license") == "CHOOSE_LICENSE":
+        pass
+    else:
+        _validate_declared_license(value.get("license"))
     if not allow_template and version == "0.0.0":
         raise ValueError("replace the template version before packaging")
     if value.get("kind") != "ai-participation":
@@ -270,13 +411,15 @@ def _package_files(
     license_payload = files.get("LICENSE")
     if license_payload is None:
         raise ValueError("plugin package must include its LICENSE file")
-    if manifest["license"] == MIT_LICENSE:
-        _require_mit_license_text(license_payload, subject="plugin LICENSE")
-    elif not (
-        allow_template
-        and b"Choose the plugin license" in license_payload
-    ):
-        raise ValueError("plugin LICENSE must match the selected supported license")
+    if allow_template and manifest["license"] == "CHOOSE_LICENSE":
+        if b"Choose the plugin license" not in license_payload:
+            raise ValueError("template plugin LICENSE placeholder is missing")
+    else:
+        _validate_plugin_license_text(
+            license_payload,
+            license_expression=manifest["license"],
+            author=manifest.get("author"),
+        )
     return files
 
 
@@ -286,6 +429,7 @@ def _reject_template_placeholders(files: dict[str, bytes]) -> None:
         b"CHOOSE_LICENSE",
         b"Replace with",
         b"Choose the plugin license",
+        b"Replace with publisher identity",
     )
     for name, content in files.items():
         if any(marker in content for marker in markers):
@@ -319,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="validate all packages and the MIT license policy",
+        help="validate the plugin source and its pinned SPDX license policy",
     )
     parser.add_argument(
         "--output", type=Path, help="directory for ZIP and SHA-256 files"
@@ -337,9 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest = _load_manifest(
             PLUGIN_SOURCE / "manifest.json", allow_template=args.check
         )
-        files = _package_files(
-            PLUGIN_SOURCE, manifest, allow_template=args.check
-        )
+        files = _package_files(PLUGIN_SOURCE, manifest, allow_template=args.check)
         if not args.check:
             _reject_template_placeholders(files)
         payload = _build_archive(files)
