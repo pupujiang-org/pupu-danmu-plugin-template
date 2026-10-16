@@ -13,3 +13,7 @@ Use this repository template to create one declarative Pupu Danmu plugin reposit
 Packages contain static JSON/text data only. They cannot include Python, JavaScript, executables, arbitrary files, or instructions that bypass host safety and pacing rules. The host owns generation, account identity, safety checks, and sending.
 
 The Registry stores reviewed Catalog metadata, not package files. See its [contribution guide](https://github.com/pupujiang-org/pupu-danmu-plugin-registry/blob/main/CONTRIBUTING.md) for review requirements.
+
+## Python SDK reference
+
+This template creates data-only plugin packages. Do not add Python Worker code or the SDK wheel to `plugin/` or its Release ZIP. The host's protocol and replay tooling come from the standalone [Pupu Danmu Plugin SDK](https://github.com/pupujiang-org/pupu-danmu-plugin-sdk), currently released as v0.2.0. Its local Worker runtime is for trusted development and integration tests; a subprocess does not sandbox Python, and the host still blocks remote/community code execution pending its Windows isolation and authorization gates.
